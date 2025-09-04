@@ -28,7 +28,7 @@ const checkApiKey = (req, res, next) => {
 };
 
 // Определяем наш единственный маршрут (endpoint)
-app.post("*", checkApiKey, async (req, res) => {
+app.post("/api/proxy", checkApiKey, async (req, res) => {
   const { statement, parameters } = req.body;
 
   if (!statement) {
