@@ -37,15 +37,17 @@ app.post("/api/proxy", checkApiKey, async (req, res) => {
   console.log("--- New request received for /api/proxy ---");
   console.log("Request body:", JSON.stringify(req.body, null, 2));
 
-  const { statement, parameters } = req.body;
+  // <<< НАЧАЛО ИЗМЕНЕНИЙ >>>
+  const { statement, statements, parameters } = req.body;
 
-  if (!statement) {
+  // Проверяем, что пришло что-то одно: либо statement, либо statements
+  if (!statement && !statements) {
     return res
       .status(400)
-      .json({ error: '"statement" is required in the request body' });
+      .json({ error: 'Request body must contain either "statement" (string) or "statements" (array of strings)' });
   }
+  // <<< КОНЕЦ ИЗМЕНЕНИЙ >>>
 
-  // --- НОВЫЙ УМНЫЙ ПАРСЕР ПАРАМЕТРОВ ---
   let parsedParameters = parameters;
   if (typeof parameters === 'string' && parameters.trim() !== '') {
       console.log("Parameters field is a string. Attempting to parse as JSON...");
@@ -61,29 +63,55 @@ app.post("/api/proxy", checkApiKey, async (req, res) => {
            });
       }
   }
-  // --- КОНЕЦ ПАРСЕРА ---
 
   if (!driver) {
      return res.status(500).json({ error: 'Server Error: Neo4j driver is not available.' });
   }
   
   const session = driver.session();
-  try {
-    console.log("Executing Cypher statement with parameters:", JSON.stringify(parsedParameters, null, 2));
-    const result = await session.run(statement, parsedParameters || {});
-    console.log("Cypher statement executed successfully.");
+  let currentStatementForErrorHandling = statement; // Для логгирования ошибки
 
-    const records = result.records.map((record) => record.toObject());
-    res.status(200).json(records);
+  try {
+    // <<< НАЧАЛО ИЗМЕНЕНИЙ >>>
+
+    // Вариант 1: Пришел один statement (старая логика)
+    if (statement) {
+      console.log("Executing single Cypher statement with parameters:", JSON.stringify(parsedParameters, null, 2));
+      const result = await session.run(statement, parsedParameters || {});
+      console.log("Cypher statement executed successfully.");
+      const records = result.records.map((record) => record.toObject());
+      res.status(200).json(records);
+
+    // Вариант 2: Пришел массив statements (новая логика)
+    } else if (statements && Array.isArray(statements)) {
+      console.log(`Executing a batch of ${statements.length} Cypher statements sequentially...`);
+      for (const stmt of statements) {
+        currentStatementForErrorHandling = stmt; // Обновляем для отладки
+        console.log(`Executing: ${stmt}`);
+        await session.run(stmt); // Выполняем каждую команду. Параметры здесь не поддерживаются для простоты.
+      }
+      console.log("All statements in the batch executed successfully.");
+      res.status(200).json({ 
+        success: true, 
+        message: `Successfully executed ${statements.length} statements.` 
+      });
+    
+    // Если в запросе что-то не так
+    } else {
+        res.status(400).json({ error: "Invalid request format. Use 'statement' or 'statements'."});
+    }
+    // <<< КОНЕЦ ИЗМЕНЕНИЙ >>>
+
   } catch (error) {
     console.error("--- ERROR EXECUTING CYPHER ---");
-    console.error("Statement:", statement);
+    console.error("Failed on Statement:", currentStatementForErrorHandling); // Показываем, какая команда упала
     console.error("Parameters used:", JSON.stringify(parsedParameters, null, 2));
     console.error("Neo4j Error:", error);
     console.error("--- END ERROR DETAILS ---");
 
     res.status(500).json({
       error: "Failed to execute query",
+      failedStatement: currentStatementForErrorHandling,
       details: error.message,
     });
   } finally {
